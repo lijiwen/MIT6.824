@@ -79,8 +79,8 @@ type Raft struct {
 	//extend
 	state int
 	stateCh chan int
-	once sync.Once
 	heartBeatTimer *time.Timer
+	applyCh chan ApplyMsg
 }
 
 // return currentTerm and whether this server
@@ -145,9 +145,14 @@ type AppendEntriesReply struct{
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	rf.heartBeatTimer.Reset(gettimeout() * time.Millisecond)
+	DPrintf("PeerId %d receive append entries\n", rf.me)
+	if rf.state == FollwerState{
+		rf.ResetHeartBeatTimer()
+	}
 	if args.Term > rf.currentTerm{
 		rf.SetCurrentTerm(args.Term)
+		rf.SetVoteFor(-1)
+		DPrintf("AppendEnties peerID %d become Follower\n",rf.me)
 		rf.stateCh <- FollwerState
 	}
 
@@ -190,6 +195,11 @@ type RequestVoteReply struct {
 // example RequestVote RPC handler.
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
+
+	if rf.state == FollwerState{
+		rf.ResetHeartBeatTimer()
+	}
+
 	// Your code here (2A, 2B).
 	if rf.currentTerm > args.Term {
 		reply.Term = rf.currentTerm
@@ -199,6 +209,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	if rf.currentTerm < args.Term {
 		rf.SetCurrentTerm(args.Term)
+		rf.SetVoteFor(-1)
+		DPrintf("RequestVote peerId %d become Follower\n", rf.me)
 		rf.stateCh <- FollwerState
 	}
 
@@ -213,6 +225,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = false
 	}
+	DPrintf("PeerId %d vote for %d", rf.me, rf.GetVoteFor())
+	DPrintf("PeerId %d reply PeerId %d: term is %d, vote is %p", rf.me, args.CandidateId, rf.currentTerm, reply.VoteGranted)
 }
 
 //
@@ -246,9 +260,18 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 //
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
+	if ok {
+		reply.timeout = false
+	}else {
+		reply.timeout = true
+	}
 	return ok
 }
 
+func (rf *Raft) raftService(msg ApplyMsg) {
+	//var nAppend int
+
+}
 
 //
 // the service using Raft (e.g. a k/v server) wants to start
@@ -270,6 +293,18 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	// Your code here (2B).
 
+	index = len(rf.log)
+	term = rf.GetCurrentTerm()
+	if rf.state == LeaderState {
+		isLeader = true
+		go func() {
+			for msg := range rf.applyCh {
+				go rf.raftService(msg)
+			}
+		}()
+	}else {
+		isLeader = false
+	}
 
 	return index, term, isLeader
 }
@@ -310,6 +345,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.votedFor = -1
 	rf.log = make([]Log, 1)
 	rf.log[0].term = 0
+	rf.applyCh = applyCh
 
 	rf.commitIndex = 0
 	rf.lastApplied = 0
@@ -338,10 +374,6 @@ func (rf *Raft) SetCurrentTerm(term int) {
 	rf.currentTerm = term
 }
 
-func gettimeout() time.Duration {
-	n := rand.Intn(150) + 300
-	return time.Duration(n)
-}
 
 func (rf *Raft) SetVoteFor(v int) {
 	rf.mu.Lock()
@@ -356,26 +388,50 @@ func (rf *Raft) GetVoteFor() int {
 }
 
 func (rf *Raft) CreateHeartBeatTimer() {
+	DPrintf("peerId %d Create Timer\n", rf.me)
 	rf.heartBeatTimer = time.NewTimer(gettimeout() * time.Millisecond)
+
 	go func(){
-		<-rf.heartBeatTimer.C
-		DPrintf("peerId %d Follwer state send CandidateState", rf.me)
-		rf.stateCh <- CandidateState
+		for {
+			<-rf.heartBeatTimer.C
+			DPrintf("peerId %d Follwer state send CandidateState\n", rf.me)
+			rf.stateCh <- CandidateState
+		}
 	}()
+}
+
+func gettimeout() time.Duration {
+	n := rand.Intn(150) + 400
+	return time.Duration(n)
+}
+
+func (rf *Raft) ResetHeartBeatTimer() {
+	DPrintf("peerId %d Reset Timer\n", rf.me)
+	rf.heartBeatTimer.Reset(gettimeout() * time.Millisecond)
+}
+
+func (rf *Raft) StopHeartBeatTimer() {
+	DPrintf("peerId %d Stop Timer\n", rf.me)
+	rf.heartBeatTimer.Stop()
 }
 
 func (rf *Raft) StateMachine(){
 	for {
-		DPrintf("peerId %d StateMachine state is %d, term is %d", rf.me, rf.state, rf.currentTerm)
+		DPrintf("peerId %d StateMachine state is %d, term is %d\n", rf.me, rf.state, rf.currentTerm)
 
 		switch rf.state {
 		case FollwerState:
-			rf.once.Do(rf.CreateHeartBeatTimer)
+			if rf.heartBeatTimer == nil {
+				rf.CreateHeartBeatTimer()
+			}else {
+				rf.ResetHeartBeatTimer()
+			}
 
 			rf.state = <-rf.stateCh
 		case CandidateState:
 			rf.SetVoteFor(-1)
 			rf.SetCurrentTerm(rf.GetCurrentTerm() + 1)
+			rf.StopHeartBeatTimer()
 			go time.AfterFunc(gettimeout() * time.Millisecond, func() {
 				if rf.state == CandidateState {
 					rf.stateCh <- CandidateState
@@ -387,12 +443,25 @@ func (rf *Raft) StateMachine(){
 			rf.state = <-rf.stateCh
 
 		case LeaderState:
-
+			rf.StopHeartBeatTimer()
 			go rf.AtLeader()
 			rf.state = <- rf.stateCh
 		default:
-			DPrintf("raft.go StateMachine default error")
+			DPrintf("raft.go StateMachine default error\n")
 		}
+	}
+}
+
+func (rf *Raft) InitIPeerEntries(appendEntriesArgs *AppendEntriesArgs, i int) {
+	appendEntriesArgs.Term = rf.currentTerm
+	appendEntriesArgs.LeaderId = rf.me
+	appendEntriesArgs.PrevLogIndex = rf.nextIndex[i] - 1
+	appendEntriesArgs.PrevLogTerm = rf.log[appendEntriesArgs.PrevLogIndex].term
+	appendEntriesArgs.LeaderCommit = rf.commitIndex
+
+	logTag := len(rf.log)
+	for j := rf.nextIndex[i]; j < logTag; j++ {
+		appendEntriesArgs.Entries = append(appendEntriesArgs.Entries, rf.log[j].l)
 	}
 }
 
@@ -414,16 +483,7 @@ func (rf *Raft) AtLeader() {
 		}
 		appendEntriesArgs := new(AppendEntriesArgs)
 		//init
-		appendEntriesArgs.Term = rf.currentTerm
-		appendEntriesArgs.LeaderId = rf.me
-		appendEntriesArgs.PrevLogIndex = rf.nextIndex[i] - 1
-		appendEntriesArgs.PrevLogTerm = rf.log[appendEntriesArgs.PrevLogIndex].term
-		appendEntriesArgs.LeaderCommit = rf.commitIndex
-
-		logTag := len(rf.log)
-		for j := rf.nextIndex[i]; j < logTag; j++ {
-			appendEntriesArgs.Entries = append(appendEntriesArgs.Entries, rf.log[j].l)
-		}
+		rf.InitIPeerEntries(appendEntriesArgs, i)
 
 		appendEntriesReply := new(AppendEntriesReply)
 		appendEntriesReply.Success = false
@@ -432,10 +492,11 @@ func (rf *Raft) AtLeader() {
 		ok := rf.sendAppendEntries(i, appendEntriesArgs, appendEntriesReply)
 		if ok {
 			if appendEntriesReply.Success {
-				rf.nextIndex[i] = logTag
-				rf.matchIndex[i] = logTag
+				rf.nextIndex[i] = len(rf.log)
+				rf.matchIndex[i] = len(rf.log)
 			} else {
 				if appendEntriesReply.Term > rf.currentTerm {
+					DPrintf("RequestVote peerId %d become Follower\n", rf.me)
 					rf.stateCh <- FollwerState
 				}else {
 					//
@@ -444,7 +505,6 @@ func (rf *Raft) AtLeader() {
 		}
 	}
 	time.Sleep((gettimeout() * time.Millisecond) / 2)
-
 	rf.stateCh <- LeaderState
 }
 
@@ -456,31 +516,41 @@ func (rf *Raft) AtCandidate() {
 	requestVoteArgs.LastLogTerm = rf.log[len(rf.log) - 1].term
 	requestVoteArgs.LastLogIndex = len(rf.log) - 1
 
+	replyCh := make(chan bool)
 	for i := 0; i < len(rf.peers); i++ {
-		ok := rf.sendRequestVote(i, &requestVoteArgs, &requestVoteReplys[i])
-		if ok {
-			requestVoteReplys[i].timeout = false
-		}else {
-			requestVoteReplys[i].timeout = true
-		}
+		requestVoteReplys[i].timeout = true
+		go func(i int) {
+			ok := rf.sendRequestVote(i, &requestVoteArgs, &requestVoteReplys[i])
+			if replyCh != nil{
+				replyCh <- ok
+			}
+		}(i)
 	}
 
-	var voteSuccess int
-	for i := 0; i < len(requestVoteReplys); i++ {
-		if !requestVoteReplys[i].timeout && requestVoteReplys[i].VoteGranted {
-			voteSuccess++
-			DPrintf("peerId %d, peer %d vote success",rf.me, i)
+	for i := 0; i < len(rf.peers); i++{
+		ok := <-replyCh
+		if !ok {
+			continue
 		}
 
-		if requestVoteReplys[i].Term > rf.GetCurrentTerm() {
-			rf.SetCurrentTerm(requestVoteReplys[i].Term)
-			rf.stateCh <- FollwerState
-			return
+		var voteSuccess int
+		for i := 0; i < len(requestVoteReplys); i++ {
+			if !requestVoteReplys[i].timeout && requestVoteReplys[i].VoteGranted && requestVoteReplys[i].Term == rf.currentTerm{
+				voteSuccess++
+				//DPrintf("peerId %d, peer %d vote success\n",rf.me, i)
+			}
+
+			if requestVoteReplys[i].Term > rf.GetCurrentTerm() {
+				rf.SetCurrentTerm(requestVoteReplys[i].Term)
+				rf.stateCh <- FollwerState
+				return
+			}
+		}
+		//DPrintf("peerId %d term %d, vote success number is %d!!!!!!!!!!!!!!!!\n", rf.me, rf.currentTerm, voteSuccess)
+
+		if voteSuccess == len(requestVoteReplys) / 2 + 1 {
+			rf.stateCh <- LeaderState
 		}
 	}
-	DPrintf("peerId %d term %d, vote success number is %d", rf.me, rf.currentTerm, voteSuccess)
-
-	if voteSuccess > len(requestVoteReplys) / 2 {
-		rf.stateCh <- LeaderState
-	}
+	close(replyCh)
 }
