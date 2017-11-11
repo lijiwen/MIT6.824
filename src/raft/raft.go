@@ -28,7 +28,7 @@ import (
 // import "encoding/gob"
 
 const(
-	FollwerState = iota
+	FollowerState  = iota
 	CandidateState
 	LeaderState
 )
@@ -146,14 +146,13 @@ type AppendEntriesReply struct{
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	DPrintf("PeerId %d receive append entries\n", rf.me)
-	if rf.state == FollwerState{
+	if rf.state == FollowerState {
 		rf.ResetHeartBeatTimer()
 	}
 	if args.Term > rf.currentTerm{
-		rf.SetCurrentTerm(args.Term)
-		rf.SetVoteFor(-1)
+		rf.UpdateNewTerm(args.Term)
 		DPrintf("AppendEnties peerID %d become Follower\n",rf.me)
-		rf.stateCh <- FollwerState
+		rf.stateCh <- FollowerState
 	}
 
 	if args.Term < rf.currentTerm {
@@ -196,7 +195,7 @@ type RequestVoteReply struct {
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
-	if rf.state == FollwerState{
+	if rf.state == FollowerState {
 		rf.ResetHeartBeatTimer()
 	}
 
@@ -208,10 +207,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 
 	if rf.currentTerm < args.Term {
-		rf.SetCurrentTerm(args.Term)
-		rf.SetVoteFor(-1)
+		rf.UpdateNewTerm(args.Term)
 		DPrintf("RequestVote peerId %d become Follower\n", rf.me)
-		rf.stateCh <- FollwerState
+		rf.stateCh <- FollowerState
 	}
 
 	if (rf.GetVoteFor() == -1 || rf.me == args.CandidateId) &&
@@ -225,8 +223,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = false
 	}
-	DPrintf("PeerId %d vote for %d", rf.me, rf.GetVoteFor())
-	DPrintf("PeerId %d reply PeerId %d: term is %d, vote is %p", rf.me, args.CandidateId, rf.currentTerm, reply.VoteGranted)
+	DPrintf("PeerId %d vote for %d\n", rf.me, rf.GetVoteFor())
+	DPrintf("PeerId %d reply PeerId %d: term is %d, vote is %v\n",
+				rf.me, args.CandidateId, rf.currentTerm, reply.VoteGranted)
 }
 
 //
@@ -338,7 +337,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 
 	// Your initialization code here (2A, 2B, 2C).
-	rf.state = FollwerState
+	rf.state = FollowerState
 	rf.stateCh = make(chan int)
 
 	rf.currentTerm = 0
@@ -387,6 +386,11 @@ func (rf *Raft) GetVoteFor() int {
 	return rf.votedFor
 }
 
+func (rf *Raft) UpdateNewTerm(term int){
+	rf.SetCurrentTerm(term)
+	rf.SetVoteFor(-1)
+}
+
 func (rf *Raft) CreateHeartBeatTimer() {
 	DPrintf("peerId %d Create Timer\n", rf.me)
 	rf.heartBeatTimer = time.NewTimer(gettimeout() * time.Millisecond)
@@ -420,7 +424,7 @@ func (rf *Raft) StateMachine(){
 		DPrintf("peerId %d StateMachine state is %d, term is %d\n", rf.me, rf.state, rf.currentTerm)
 
 		switch rf.state {
-		case FollwerState:
+		case FollowerState:
 			if rf.heartBeatTimer == nil {
 				rf.CreateHeartBeatTimer()
 			}else {
@@ -497,7 +501,8 @@ func (rf *Raft) AtLeader() {
 			} else {
 				if appendEntriesReply.Term > rf.currentTerm {
 					DPrintf("RequestVote peerId %d become Follower\n", rf.me)
-					rf.stateCh <- FollwerState
+					rf.UpdateNewTerm(appendEntriesArgs.Term)
+					rf.stateCh <- FollowerState
 				}else {
 					//
 				}
@@ -541,9 +546,8 @@ func (rf *Raft) AtCandidate() {
 			}
 
 			if requestVoteReplys[i].Term > rf.GetCurrentTerm() {
-				rf.SetCurrentTerm(requestVoteReplys[i].Term)
-				rf.stateCh <- FollwerState
-				return
+				rf.UpdateNewTerm(requestVoteReplys[i].Term)
+				rf.stateCh <- FollowerState
 			}
 		}
 		//DPrintf("peerId %d term %d, vote success number is %d!!!!!!!!!!!!!!!!\n", rf.me, rf.currentTerm, voteSuccess)
