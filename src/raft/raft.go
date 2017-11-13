@@ -165,7 +165,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.ResetHeartBeatTimer()
 	}
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
 
 	if args.Term > rf.currentTerm{
 		rf.currentTerm = args.Term
@@ -178,38 +177,58 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		//DPrintf("111111111")
 		reply.Term = rf.currentTerm
 		reply.Success = false
+		rf.mu.Unlock()
 		return
 	}
 	if len(rf.log) - 1 < args.PrevLogIndex {
 		//DPrintf("222222222")
 		reply.Term = rf.currentTerm
 		reply.Success = false
+		rf.mu.Unlock()
 		return
 	}
 	if rf.log[args.PrevLogIndex].Term != args.PrevLogTerm{
 		//DPrintf("33333333333")
 		reply.Term = rf.currentTerm
 		reply.Success = false
+		rf.mu.Unlock()
 		return
 	}
 
-	reply.Term = rf.currentTerm
-	reply.Success = true
+	if args.LeaderId != rf.votedFor {
+		//DPrintf("44444444, %d, %d", args.LeaderId, rf.votedFor)
+		reply.Term = args.Term
+		reply.Success = false
+		if rf.votedFor == -1 {
+			rf.votedFor = args.LeaderId
+		}
+		rf.mu.Unlock()
+		return
+	}
 
 	beginIndex := args.PrevLogIndex + 1
-	//DPrintf("PeerId %d: entries log is %v\n", rf.me, args.Entries)
+	//DPrintf("PeerId %d: term is %d,  entries log is %v\n", rf.me,args.Term, args.Entries)
 	for i := 0; i < len(args.Entries); i++ {
 		if i + beginIndex < len(rf.log) {
-			rf.log[i + beginIndex] = args.Entries[i]
+			if rf.log[i + beginIndex] != args.Entries[i]{
+				rf.log[i + beginIndex] = args.Entries[i]
+				rf.log = rf.log[ : i + beginIndex + 1 : i + beginIndex + 1]
+			}
+
 		}else {
 			rf.log = append(rf.log, args.Entries[i])
 		}
 		//DPrintf("PeerId %d: index log is %v", rf.me, rf.log)
 	}
+
 	if args.LeaderCommit > rf.commitIndex {
 		rf.commitIndex = min(args.LeaderCommit, len(rf.log) - 1)
 		DPrintf("PeerId %d commit to %d", rf.me, rf.commitIndex)
 	}
+	reply.Term = rf.currentTerm
+	reply.Success = true
+
+	rf.mu.Unlock()
 }
 
 func min(a, b int) int{
@@ -248,6 +267,12 @@ func (rf *Raft) CheckCanCommited(){
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) {
 net:
 	//DPrintf("sendAppendEntries args add %p\n", args)
+
+	//if we don't check this, may follower state send appenentries RPC, cause error
+	if rf.state != LeaderState {
+		//rf.mu.Unlock()
+		return
+	}
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 
 	rf.mu.Lock()
@@ -321,9 +346,11 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.stateCh <- FollowerState
 	}
 
+	logIndexSelf := len(rf.log) - 1
+
+	//DPrintf("PeerId is %d, termA:%d, indexA:%d, termB:%d, indexB:%d", rf.me, args.LastLogTerm, args.LastLogIndex, rf.log[logIndexSelf].Term, logIndexSelf)
 	if (rf.votedFor == -1 || rf.me == args.CandidateId) &&
-		args.LastLogIndex == len(rf.log) - 1 &&
-		args.LastLogTerm == rf.log[len(rf.log) - 1].Term {
+		isNewest(args.LastLogTerm, args.LastLogIndex, rf.log[logIndexSelf].Term, logIndexSelf){
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = true
 
@@ -335,6 +362,13 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	//DPrintf("PeerId %d vote for %d\n", rf.me, rf.votedFor)
 	//DPrintf("PeerId %d reply PeerId %d: Term is %d, vote is %v\n",
 	//			rf.me, args.CandidateId, rf.currentTerm, reply.VoteGranted)
+}
+
+func isNewest(termA, indexA, termB, indexB int) bool {
+	if termA == termB {
+		return indexA >= indexB
+	}
+	return termA > termB
 }
 
 //
@@ -406,7 +440,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 		rf.log = append(rf.log, Log{term, command})
 		go rf.sendAppendEntriesToAllServer()
-		DPrintf("Start index is %d, term is %d, command is %v\n", index, term, command)
+		DPrintf("Start leader is %d, index is %d, term is %d, command is %v\n",rf.me, index, term, command)
 	}else {
 		isLeader = false
 	}
@@ -495,18 +529,19 @@ func (rf *Raft) CreateCommitTimer() {
 	for _ = range ticks.C {
 		rf.mu.Lock()
 		cIndex := rf.commitIndex
-		rf.mu.Unlock()
 		for cIndex > rf.lastApplied {
 			rf.lastApplied++
 			log := rf.log[rf.lastApplied]
+			DPrintf("PeerId %d log is %v", rf.me, rf.log)
 			//apply
 			rf.raftData = log.L
 
 			func(index int){
 				rf.applyCh <- ApplyMsg{index, rf.log[index].L, false, nil}
 			}(rf.lastApplied)
-			//DPrintf("PeerId %d apply to %d, log is %v\n", rf.me, rf.lastApplied, rf.log)
+			DPrintf("PeerId %d apply to %d, log is %v\n", rf.me, rf.lastApplied, rf.log[rf.lastApplied])
 		}
+		rf.mu.Unlock()
 	}
 }
 
