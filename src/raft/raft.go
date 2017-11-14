@@ -82,6 +82,7 @@ type Raft struct {
 	state int
 	stateCh chan int
 	heartBeatTimer *time.Timer
+	commitTimer *time.Ticker
 	applyCh chan ApplyMsg
 
 	raftData interface{}
@@ -155,6 +156,7 @@ type AppendEntriesArgs struct {
 type AppendEntriesReply struct{
 	Term int
 	Success bool
+	NeedCheckIndex int
 }
 
 func (rf *Raft) getCurrentState() int{
@@ -169,12 +171,19 @@ func (rf *Raft) setCurrentState(s int) {
 	rf.state = s
 }
 
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	//DPrintf("PeerId %d receive append entries\n", rf.me)
+	rf.mu.Lock()
 	if rf.state == FollowerState {
 		rf.resetHeartBeatTimer()
 	}
-	rf.mu.Lock()
 
 	if args.Term > rf.currentTerm{
 		rf.currentTerm = args.Term
@@ -184,31 +193,35 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	if args.Term < rf.currentTerm {
-		//DPrintf("111111111")
+		DPrintf("111111111")
 		reply.Term = rf.currentTerm
 		reply.Success = false
+		reply.NeedCheckIndex = -1
 		rf.mu.Unlock()
 		return
 	}
 	if len(rf.log) - 1 < args.PrevLogIndex {
-		//DPrintf("222222222")
+		DPrintf("peerId is %d, 222222222, %d, %d", rf.me,len(rf.log) - 1, args.PrevLogIndex)
 		reply.Term = rf.currentTerm
 		reply.Success = false
+		reply.NeedCheckIndex = len(rf.log)
 		rf.mu.Unlock()
 		return
 	}
 	if rf.log[args.PrevLogIndex].Term != args.PrevLogTerm{
-		//DPrintf("33333333333")
+		DPrintf("PeerId is %d, 33333333333，%d, %d, %d", rf.me,args.PrevLogIndex ,rf.log[args.PrevLogIndex].Term, args.PrevLogTerm)
 		reply.Term = rf.currentTerm
 		reply.Success = false
+		reply.NeedCheckIndex = max(args.PrevLogIndex - 50, 1)
 		rf.mu.Unlock()
 		return
 	}
 
 	if args.LeaderId != rf.votedFor {
-		//DPrintf("44444444, %d, %d", args.LeaderId, rf.votedFor)
+		DPrintf("PeerId is %d, 44444444, %d, %d", rf.me, args.LeaderId, rf.votedFor)
 		reply.Term = args.Term
 		reply.Success = false
+		reply.NeedCheckIndex = -1
 		if rf.votedFor == -1 {
 			rf.votedFor = args.LeaderId
 		}
@@ -219,6 +232,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	beginIndex := args.PrevLogIndex + 1
 	//DPrintf("PeerId %d: term is %d,  entries log is %v\n", rf.me,args.Term, args.Entries)
 	for i := 0; i < len(args.Entries); i++ {
+		if cap(rf.log) < beginIndex + len(args.Entries) {
+
+		}
 		if i + beginIndex < len(rf.log) {
 			if rf.log[i + beginIndex] != args.Entries[i]{
 				rf.log[i + beginIndex] = args.Entries[i]
@@ -233,7 +249,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	if args.LeaderCommit > rf.commitIndex {
 		rf.commitIndex = min(args.LeaderCommit, len(rf.log) - 1)
-		//DPrintf("PeerId %d commit to %d", rf.me, rf.commitIndex)
+		DPrintf("PeerId %d commit to %d", rf.me, rf.commitIndex)
 	}
 	reply.Term = rf.currentTerm
 	reply.Success = true
@@ -253,8 +269,11 @@ func min(a, b int) int{
 }
 
 func (rf *Raft) checkCanCommited(){
+	rf.mu.Lock()
+
 	n := rf.commitIndex
 	serverNum := len(rf.peers)
+	rf.mu.Unlock()
 	okNum := serverNum
 	for okNum > serverNum / 2{
 		okNum = 0
@@ -266,14 +285,19 @@ func (rf *Raft) checkCanCommited(){
 		}
 	}
 
+
 	canCommitIndex := n - 1
 	beginCommitIndex := rf.commitIndex + 1
 	for i := canCommitIndex; i >= beginCommitIndex; i-- {
 		if rf.currentTerm == rf.log[i].Term {
 			rf.commitIndex = i
-			//DPrintf("PeerId %d leader commit to %d", rf.me, rf.commitIndex)
+			DPrintf("PeerId %d leader commit to %d", rf.me, rf.commitIndex)
+			rf.mu.Lock()
 			rf.persist()
+			rf.mu.Unlock()
 			break
+		}else {
+			DPrintf("PeerId %d leader do not commit to %d, currentTerm is %d, log term is %d\n", rf.me, rf.commitIndex, rf.currentTerm, rf.log[i].Term)
 		}
 	}
 }
@@ -294,7 +318,7 @@ net:
 		if reply.Success {
 			rf.nextIndex[server] = args.PrevLogIndex + len(args.Entries) + 1
 			rf.matchIndex[server] = args.PrevLogIndex + len(args.Entries)
-			rf.checkCanCommited()
+			go rf.checkCanCommited()
 		} else {
 			if reply.Term > rf.currentTerm {
 				//DPrintf("sendAppendEntries peerId %d become Follower\n", rf.me)
@@ -302,9 +326,12 @@ net:
 				rf.stateCh <- FollowerState
 				rf.persist()
 			}else {
-				if (rf.nextIndex[server] > 1){
+				if reply.NeedCheckIndex != -1{
+					rf.nextIndex[server] = min(reply.NeedCheckIndex, rf.nextIndex[server])
+				} else if rf.nextIndex[server] > 1{
 					rf.nextIndex[server]--
 				}
+
 				rf.initIPeerEntries(args, server)
 				rf.mu.Unlock()
 				goto net
@@ -455,8 +482,9 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		term = rf.currentTerm
 
 		rf.log = append(rf.log, Log{term, command})
+		rf.persist()
 		go rf.sendAppendEntriesToAllServer()
-		//DPrintf("Start leader is %d, index is %d, term is %d, command is %v\n",rf.me, index, term, command)
+		DPrintf("Start leader is %d, index is %d, term is %d, command is %v\n",rf.me, index, term, command)
 	}else {
 		isLeader = false
 	}
@@ -480,6 +508,7 @@ func (rf *Raft) sendAppendEntriesToAllServer () {
 		appendEntriesReply := new(AppendEntriesReply)
 		appendEntriesReply.Success = false
 		appendEntriesReply.Term = -1
+		appendEntriesReply.NeedCheckIndex = -1
 
 		go rf.sendAppendEntries(i, appendEntriesArgs, appendEntriesReply)
 	}
@@ -495,6 +524,14 @@ func (rf *Raft) sendAppendEntriesToAllServer () {
 //
 func (rf *Raft) Kill() {
 	// Your code here, if desired.
+	rf.mu.Lock()
+	DPrintf("PeerId %d crash\n", rf.me)
+
+	close(rf.applyCh)
+	rf.applyCh = nil
+	close(rf.stateCh)
+	rf.stateCh = nil
+	rf.mu.Unlock()
 }
 
 //
@@ -540,9 +577,13 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	return rf
 }
 
+func (rf *Raft) stopCommittimer() {
+	rf.commitTimer.Stop()
+}
+
 func (rf *Raft) createCommitTimer() {
-	ticks := time.NewTicker(200 * time.Millisecond)
-	for _ = range ticks.C {
+	rf.commitTimer = time.NewTicker(200 * time.Millisecond)
+	for _ = range rf.commitTimer.C {
 		rf.mu.Lock()
 		cIndex := rf.commitIndex
 		for cIndex > rf.lastApplied {
@@ -582,13 +623,16 @@ func (rf *Raft) createHeartBeatTimer() {
 		for {
 			<-rf.heartBeatTimer.C
 			//DPrintf("peerId %d Follwer state send CandidateState\n", rf.me)
+			if rf.stateCh == nil {
+				 break
+			}
 			rf.stateCh <- CandidateState
 		}
 	}()
 }
 
 func gettimeout() time.Duration {
-	n := rand.Intn(150) + 400
+	n := rand.Intn(150) + 600
 	return time.Duration(n)
 }
 
@@ -604,7 +648,7 @@ func (rf *Raft) stopHeartBeatTimer() {
 
 func (rf *Raft) stateMachine(){
 	for {
-		//DPrintf("peerId %d stateMachine state is %d, Term is %d\n", rf.me, rf.state, rf.currentTerm)
+		DPrintf("peerId %d stateMachine state is %d, Term is %d\n", rf.me, rf.state, rf.currentTerm)
 
 		switch rf.state {
 		case FollowerState:
@@ -699,9 +743,9 @@ func (rf *Raft) atCandidate() {
 			if requestVoteReplys[i].Term > rf.getCurrentTerm() {
 				rf.mu.Lock()
 				rf.updateNewTerm(requestVoteReplys[i].Term)
+				rf.persist()
 				rf.mu.Unlock()
 				rf.stateCh <- FollowerState
-				rf.persist()
 			}
 		}
 		//DPrintf("peerId %d Term %d, vote success number is %d!!!!!!!!!!!!!!!!\n", rf.me, rf.currentTerm, voteSuccess)
