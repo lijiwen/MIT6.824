@@ -85,7 +85,7 @@ type Raft struct {
 	commitTimer *time.Ticker
 	applyCh chan ApplyMsg
 
-	raftData interface{}
+	raftData map[string]string
 }
 
 // return currentTerm and whether this server
@@ -193,7 +193,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	if args.Term < rf.currentTerm {
-		DPrintf("111111111")
+		//DPrintf("111111111")
 		reply.Term = rf.currentTerm
 		reply.Success = false
 		reply.NeedCheckIndex = -1
@@ -201,7 +201,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 	if len(rf.log) - 1 < args.PrevLogIndex {
-		DPrintf("peerId is %d, 222222222, %d, %d", rf.me,len(rf.log) - 1, args.PrevLogIndex)
+		//DPrintf("peerId is %d, 222222222, %d, %d", rf.me,len(rf.log) - 1, args.PrevLogIndex)
 		reply.Term = rf.currentTerm
 		reply.Success = false
 		reply.NeedCheckIndex = len(rf.log)
@@ -209,7 +209,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 	if rf.log[args.PrevLogIndex].Term != args.PrevLogTerm{
-		DPrintf("PeerId is %d, 33333333333，%d, %d, %d", rf.me,args.PrevLogIndex ,rf.log[args.PrevLogIndex].Term, args.PrevLogTerm)
+		//DPrintf("PeerId is %d, 33333333333，%d, %d, %d", rf.me,args.PrevLogIndex ,rf.log[args.PrevLogIndex].Term, args.PrevLogTerm)
 		reply.Term = rf.currentTerm
 		reply.Success = false
 		reply.NeedCheckIndex = max(args.PrevLogIndex - 50, 1)
@@ -218,7 +218,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	if args.LeaderId != rf.votedFor {
-		DPrintf("PeerId is %d, 44444444, %d, %d", rf.me, args.LeaderId, rf.votedFor)
+		//DPrintf("PeerId is %d, 44444444, %d, %d", rf.me, args.LeaderId, rf.votedFor)
 		reply.Term = args.Term
 		reply.Success = false
 		reply.NeedCheckIndex = -1
@@ -588,10 +588,8 @@ func (rf *Raft) createCommitTimer() {
 		cIndex := rf.commitIndex
 		for cIndex > rf.lastApplied {
 			rf.lastApplied++
-			log := rf.log[rf.lastApplied]
 			//DPrintf("PeerId %d log is %v", rf.me, rf.log)
 			//apply
-			rf.raftData = log.L
 			rf.persist()
 
 			func(index int){

@@ -2,12 +2,20 @@ package raftkv
 
 import "labrpc"
 import "crypto/rand"
-import "math/big"
+import (
+	"math/big"
+	"log"
+	"sync/atomic"
+)
 
+var currentClientId int64
 
 type Clerk struct {
 	servers []*labrpc.ClientEnd
+	lastLeader int
 	// You will have to modify this struct.
+	clientId int64
+	currentOpNum int64
 }
 
 func nrand() int64 {
@@ -20,7 +28,11 @@ func nrand() int64 {
 func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
-	// You'll have to add code here.
+	ck.lastLeader = 0
+
+	ck.clientId = atomic.AddInt64(&currentClientId, 1)
+	ck.currentOpNum = 0
+
 	return ck
 }
 
@@ -39,7 +51,36 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 func (ck *Clerk) Get(key string) string {
 
 	// You will have to modify this function.
-	return ""
+
+	DPrintf("client %d get key:%v", ck.clientId, key)
+	var args GetArgs
+	args.Key = key
+	args.ClientId = ck.clientId
+	args.OpNum = atomic.AddInt64(&ck.currentOpNum, 1)
+
+
+	value := ""
+	for {
+		var gerReply GetReply
+
+		ok := ck.servers[ck.lastLeader].Call("RaftKV.Get", &args, &gerReply)
+		DPrintf("ck.id:%d, reply:%v, ok:%v",ck.clientId, gerReply, ok)
+
+		ck.lastLeader = (ck.lastLeader + 1) % len(ck.servers)
+		if !ok {
+			continue
+		}
+		if gerReply.Err != OK {
+			log.Println(gerReply.Err)
+		}
+		if gerReply.WrongLeader != true{
+			value = gerReply.Value
+			break
+		}
+		//DPrintf("client call server %d putappend", ck.lastLeader)
+	}
+
+	return value
 }
 
 //
@@ -53,12 +94,43 @@ func (ck *Clerk) Get(key string) string {
 // arguments. and reply must be passed as a pointer.
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
-	// You will have to modify this function.
+
+	var args PutAppendArgs
+	args.Key = key
+	args.Value = value
+	args.Op = op
+	args.ClientId = ck.clientId
+	args.OpNum = atomic.AddInt64(&ck.currentOpNum, 1)
+
+	for {
+		var putAppendReply PutAppendReply
+
+		//DPrintf("client call server %d putappend, init reply is %v", ck.lastLeader,putAppendReply)
+
+		ok := ck.servers[ck.lastLeader].Call("RaftKV.PutAppend", &args, &putAppendReply)
+
+		ck.lastLeader = (ck.lastLeader + 1) % len(ck.servers)
+		if !ok {
+			continue
+		}
+
+		DPrintf("ck id:%d, reply:%v, ok:%v",ck.clientId,putAppendReply, ok)
+
+		if putAppendReply.Err != OK {
+			log.Println(putAppendReply.Err)
+		}
+		if putAppendReply.WrongLeader != true{
+			break
+		}
+	}
+	DPrintf("xxxxxx")
 }
 
 func (ck *Clerk) Put(key string, value string) {
+	DPrintf("client %d put key:%v, value:%v", ck.clientId,key, value)
 	ck.PutAppend(key, value, "Put")
 }
 func (ck *Clerk) Append(key string, value string) {
+	DPrintf("client %d append key:%v, value:%v",ck.clientId ,key, value)
 	ck.PutAppend(key, value, "Append")
 }
