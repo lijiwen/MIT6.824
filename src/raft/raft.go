@@ -85,7 +85,6 @@ type Raft struct {
 	commitTimer *time.Ticker
 	applyCh chan ApplyMsg
 
-	raftData map[string]string
 }
 
 // return currentTerm and whether this server
@@ -120,7 +119,6 @@ func (rf *Raft) persist() {
 	 e.Encode(rf.log)
 	 e.Encode(rf.commitIndex)
 	 e.Encode(rf.lastApplied)
-	 e.Encode(rf.raftData)
 	 data := w.Bytes()
 	 rf.persister.SaveRaftState(data)
 }
@@ -138,7 +136,6 @@ func (rf *Raft) readPersist(data []byte) {
 	 d.Decode(&rf.log)
 	 d.Decode(&rf.commitIndex)
 	 d.Decode(&rf.lastApplied)
-	 d.Decode(&rf.raftData)
 	if data == nil || len(data) < 1 { // bootstrap without any state?
 		return
 	}

@@ -123,7 +123,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 			break
 		}
 	}
-	DPrintf("xxxxxx")
+	//DPrintf("xxxxxx")
 }
 
 func (ck *Clerk) Put(key string, value string) {

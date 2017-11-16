@@ -399,6 +399,7 @@ func TestPersistPartitionUnreliable(t *testing.T) {
 // also checks that majority discards committed log entries
 // even if minority doesn't respond.
 //
+/*
 func TestSnapshotRPC(t *testing.T) {
 	const nservers = 3
 	maxraftstate := 1000
@@ -510,3 +511,4 @@ func TestSnapshotUnreliableRecoverConcurrentPartition(t *testing.T) {
 	fmt.Printf("Test: persistence with several clients, failures, and snapshots, unreliable and partitions ...\n")
 	GenericTest(t, "snapshotunreliableconcurpartitions", 5, true, true, true, 1000)
 }
+*/
