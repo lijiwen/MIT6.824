@@ -48,6 +48,7 @@ type ApplyMsg struct {
 }
 
 type Log struct {
+	Index int
 	Term int
 	L    interface{}
 }
@@ -168,6 +169,14 @@ func (rf *Raft) setCurrentState(s int) {
 	rf.state = s
 }
 
+func (rf *Raft) getLastIndex() int {
+	return rf.log[len(rf.log) - 1].Index
+}
+
+func (rf *Raft) getLastTerm() int {
+	return rf.log[len(rf.log) - 1].Term
+}
+
 func max(a, b int) int {
 	if a > b {
 		return a
@@ -182,6 +191,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.resetHeartBeatTimer()
 	}
 
+	lastLogIndex := rf.getLastIndex()
+	baseIndex := rf.log[0].Index
 	if args.Term > rf.currentTerm{
 		rf.currentTerm = args.Term
 		rf.votedFor = args.LeaderId
@@ -197,16 +208,16 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.mu.Unlock()
 		return
 	}
-	if len(rf.log) - 1 < args.PrevLogIndex {
-		//DPrintf("peerId is %d, 222222222, %d, %d", rf.me,len(rf.log) - 1, args.PrevLogIndex)
+	if lastLogIndex < args.PrevLogIndex {
+		//DPrintf("peerId is %d, 222222222, %d, %d", rf.me, lastLogIndex, args.PrevLogIndex)
 		reply.Term = rf.currentTerm
 		reply.Success = false
-		reply.NeedCheckIndex = len(rf.log)
+		reply.NeedCheckIndex = lastLogIndex + 1
 		rf.mu.Unlock()
 		return
 	}
-	if rf.log[args.PrevLogIndex].Term != args.PrevLogTerm{
-		//DPrintf("PeerId is %d, 33333333333，%d, %d, %d", rf.me,args.PrevLogIndex ,rf.log[args.PrevLogIndex].Term, args.PrevLogTerm)
+	if rf.log[args.PrevLogIndex - baseIndex].Term != args.PrevLogTerm{
+		//DPrintf("PeerId is %d, 33333333333，%d, %d, %d", rf.me,args.PrevLogIndex ,rf.log[args.PrevLogIndex - baseIndex].Term, args.PrevLogTerm)
 		reply.Term = rf.currentTerm
 		reply.Success = false
 		reply.NeedCheckIndex = max(args.PrevLogIndex - 50, 1)
@@ -229,13 +240,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	beginIndex := args.PrevLogIndex + 1
 	//DPrintf("PeerId %d: term is %d,  entries log is %v\n", rf.me,args.Term, args.Entries)
 	for i := 0; i < len(args.Entries); i++ {
-		if cap(rf.log) < beginIndex + len(args.Entries) {
-
-		}
-		if i + beginIndex < len(rf.log) {
-			if rf.log[i + beginIndex] != args.Entries[i]{
-				rf.log[i + beginIndex] = args.Entries[i]
-				rf.log = rf.log[ : i + beginIndex + 1 : i + beginIndex + 1]
+		if i + beginIndex <= rf.getLastIndex() {
+			if rf.log[i + beginIndex - baseIndex] != args.Entries[i]{
+				rf.log[i + beginIndex - baseIndex] = args.Entries[i]
+				rf.log = rf.log[ : i + beginIndex + 1 - baseIndex: i + beginIndex + 1 - baseIndex]
 			}
 
 		}else {
@@ -245,7 +253,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	if args.LeaderCommit > rf.commitIndex {
-		rf.commitIndex = min(args.LeaderCommit, len(rf.log) - 1)
+		rf.commitIndex = min(args.LeaderCommit, rf.getLastIndex())
 		DPrintf("PeerId %d commit to %d", rf.me, rf.commitIndex)
 	}
 	reply.Term = rf.currentTerm
@@ -281,12 +289,12 @@ func (rf *Raft) checkCanCommited(){
 			}
 		}
 	}
-
+	baseIndex := rf.log[0].Index
 
 	canCommitIndex := n - 1
 	beginCommitIndex := rf.commitIndex + 1
 	for i := canCommitIndex; i >= beginCommitIndex; i-- {
-		if rf.currentTerm == rf.log[i].Term {
+		if rf.currentTerm == rf.log[i - baseIndex].Term {
 			rf.commitIndex = i
 			DPrintf("PeerId %d leader commit to %d", rf.me, rf.commitIndex)
 			rf.mu.Lock()
@@ -294,7 +302,7 @@ func (rf *Raft) checkCanCommited(){
 			rf.mu.Unlock()
 			break
 		}else {
-			DPrintf("PeerId %d leader do not commit to %d, currentTerm is %d, log term is %d\n", rf.me, rf.commitIndex, rf.currentTerm, rf.log[i].Term)
+			DPrintf("PeerId %d leader do not commit to %d, currentTerm is %d, log term is %d\n", rf.me, rf.commitIndex, rf.currentTerm, rf.log[i - baseIndex].Term)
 		}
 	}
 }
@@ -385,11 +393,12 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.stateCh <- FollowerState
 	}
 
-	logIndexSelf := len(rf.log) - 1
+	logIndexSelf := rf.getLastIndex()
+	baseIndex := rf.log[0].Index
 
-	//DPrintf("PeerId is %d, termA:%d, indexA:%d, termB:%d, indexB:%d", rf.me, args.LastLogTerm, args.LastLogIndex, rf.log[logIndexSelf].Term, logIndexSelf)
+	//DPrintf("PeerId is %d, termA:%d, indexA:%d, termB:%d, indexB:%d", rf.me, args.LastLogTerm, args.LastLogIndex, rf.log[logIndexSelf - baseIndex].Term, logIndexSelf)
 	if (rf.votedFor == -1 || rf.me == args.CandidateId) &&
-		isNewest(args.LastLogTerm, args.LastLogIndex, rf.log[logIndexSelf].Term, logIndexSelf){
+		isNewest(args.LastLogTerm, args.LastLogIndex, rf.log[logIndexSelf - baseIndex].Term, logIndexSelf){
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = true
 
@@ -475,10 +484,10 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	defer rf.mu.Unlock()
 	if rf.state == LeaderState {
 		isLeader = true
-		index = len(rf.log)
+		index = rf.getLastIndex() + 1
 		term = rf.currentTerm
 
-		rf.log = append(rf.log, Log{term, command})
+		rf.log = append(rf.log, Log{index,term, command})
 		rf.persist()
 		go rf.sendAppendEntriesToAllServer()
 		DPrintf("Start leader is %d, index is %d, term is %d, command is %v\n",rf.me, index, term, command)
@@ -495,8 +504,8 @@ func (rf *Raft) sendAppendEntriesToAllServer () {
 	l := len(rf.peers)
 	for i := 0; i < l; i++ {
 		if i == rf.me {
-			rf.nextIndex[i] = len(rf.log)
-			rf.matchIndex[i] = len(rf.log) - 1
+			rf.nextIndex[i] = rf.getLastIndex() + 1
+			rf.matchIndex[i] = rf.getLastIndex()
 			continue
 		}
 		appendEntriesArgs := new(AppendEntriesArgs)
@@ -557,6 +566,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.votedFor = -1
 	rf.log = make([]Log, 1)
 	rf.log[0].Term = 0
+	rf.log[0].Term = 0
 	rf.applyCh = applyCh
 
 	rf.commitIndex = 0
@@ -583,6 +593,7 @@ func (rf *Raft) createCommitTimer() {
 	for _ = range rf.commitTimer.C {
 		rf.mu.Lock()
 		cIndex := rf.commitIndex
+		baseIndex := rf.log[0].Index
 		for cIndex > rf.lastApplied {
 			rf.lastApplied++
 			//DPrintf("PeerId %d log is %v", rf.me, rf.log)
@@ -590,9 +601,9 @@ func (rf *Raft) createCommitTimer() {
 			rf.persist()
 
 			func(index int){
-				rf.applyCh <- ApplyMsg{index, rf.log[index].L, false, nil}
+				rf.applyCh <- ApplyMsg{index, rf.log[index - baseIndex].L, false, nil}
 			}(rf.lastApplied)
-			//DPrintf("PeerId %d apply to %d, log is %v\n", rf.me, rf.lastApplied, rf.log[rf.lastApplied])
+			//DPrintf("PeerId %d apply to %d, log is %v\n", rf.me, rf.lastApplied, rf.log[rf.lastApplied - baseIndex])
 		}
 		rf.mu.Unlock()
 	}
@@ -680,16 +691,17 @@ func (rf *Raft) stateMachine(){
 }
 
 func (rf *Raft) initIPeerEntries(appendEntriesArgs *AppendEntriesArgs, i int) {
+	baseIndex := rf.log[0].Index
 	appendEntriesArgs.Term = rf.currentTerm
 	appendEntriesArgs.LeaderId = rf.me
 	appendEntriesArgs.PrevLogIndex = rf.nextIndex[i] - 1
-	appendEntriesArgs.PrevLogTerm = rf.log[appendEntriesArgs.PrevLogIndex].Term
+	appendEntriesArgs.PrevLogTerm = rf.log[appendEntriesArgs.PrevLogIndex - baseIndex].Term
 	appendEntriesArgs.LeaderCommit = rf.commitIndex
 	appendEntriesArgs.Entries = make([]Log, 0)
 
-	logTag := len(rf.log)
+	logTag := rf.getLastIndex() + 1
 	for j := rf.nextIndex[i]; j < logTag; j++ {
-		appendEntriesArgs.Entries = append(appendEntriesArgs.Entries, rf.log[j])
+		appendEntriesArgs.Entries = append(appendEntriesArgs.Entries, rf.log[j - baseIndex])
 	}
 }
 
@@ -707,8 +719,8 @@ func (rf *Raft) atCandidate() {
 	requestVoteReplys := make([]RequestVoteReply, len(rf.peers))
 	requestVoteArgs.Term = rf.currentTerm
 	requestVoteArgs.CandidateId = rf.me
-	requestVoteArgs.LastLogTerm = rf.log[len(rf.log) - 1].Term
-	requestVoteArgs.LastLogIndex = len(rf.log) - 1
+	requestVoteArgs.LastLogTerm = rf.getLastTerm()
+	requestVoteArgs.LastLogIndex = rf.getLastIndex()
 	rf.mu.Unlock()
 
 	replyCh := make(chan bool)
@@ -749,10 +761,10 @@ func (rf *Raft) atCandidate() {
 			//initial leader
 			for i := 0; i < len(rf.peers); i++ {
 				if i == rf.me {
-					rf.nextIndex[i] = len(rf.log)
-					rf.matchIndex[i] = len(rf.log) - 1
+					rf.nextIndex[i] = rf.getLastIndex() + 1
+					rf.matchIndex[i] = rf.getLastIndex()
 				}else {
-					rf.nextIndex[i] = len(rf.log)
+					rf.nextIndex[i] = rf.getLastIndex() + 1
 					rf.matchIndex[i] = 0
 				}
 			}
