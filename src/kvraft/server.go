@@ -66,12 +66,14 @@ func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 	op.OpNum= args.OpNum
 
 	kv.mu.Lock()
+	DPrintf("kv:%d, get lock 1", kv.me)
 	index, _, isLeaader := kv.rf.Start(op)
 
 	if isLeaader {
 		kv.terms[index] = pack{&op, false, Err(""), ""}
 	}
 	kv.mu.Unlock()
+	DPrintf("kv:%d, get lease 1", kv.me)
 
 	if isLeaader {
 		t := time.NewTicker(timeout * time.Millisecond)
@@ -79,8 +81,10 @@ func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 		for {
 			<- t.C
 			i++
+			bFlag := false
 			//DPrintf("tiemrtiemrtiemr")
 			kv.mu.Lock()
+			DPrintf("kv:%d, get lock 2", kv.me)
 			p := kv.terms[index]
 
 			//timeout
@@ -88,11 +92,8 @@ func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 				reply.Err = OK
 				reply.WrongLeader = true
 				delete(kv.terms, index)
-
-				kv.mu.Unlock()
-				break
-			}
-			if p.runed {
+				bFlag = true
+			}else if p.runed {
 				reply.Err= p.err
 				reply.WrongLeader = false
 				reply.Value = p.value
@@ -104,13 +105,17 @@ func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 				delete(kv.terms, index)
 				//DPrintf("peerId is %d, putappend reply is %v, kv is %v", kv.me,reply, kv.kv)
 
-				kv.mu.Unlock()
-				break
+				bFlag = true
 			}
 
 			kv.mu.Unlock()
+			DPrintf("kv:%d, get lease 2", kv.me)
+			if bFlag {
+				break
+			}
 		}
 	}else{
+		DPrintf("4")
 		reply.WrongLeader = true
 		reply.Err = OK
 	}
@@ -118,7 +123,7 @@ func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 	return
 }
 
-const timeout = 500
+const timeout = 100
 
 func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	//Your code here.
@@ -133,13 +138,14 @@ func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	op.Args[1] = args.Value
 	op.ClientId = args.ClientId
 	op.OpNum= args.OpNum
-
 	kv.mu.Lock()
+	DPrintf("kv:%d, putappend lock 1", kv.me)
 	index, _, isLeaader := kv.rf.Start(op)
 	if isLeaader {
 		kv.terms[index] = pack{&op, false, Err("Default err"), ""}
 	}
 	kv.mu.Unlock()
+	DPrintf("kv:%d, putappend lease 1", kv.me)
 
 	if isLeaader {
 		t := time.NewTicker(timeout * time.Millisecond)
@@ -147,20 +153,17 @@ func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		for {
 			<- t.C
 			i++
-			//DPrintf("tiemrtiemrtiemr")
+			bFlag := false
 			kv.mu.Lock()
+			DPrintf("kv:%d, putappend lock 2", kv.me)
 			p := kv.terms[index]
-
 			//timeout
 			if i == 10 {
 				reply.Err = OK
 				reply.WrongLeader = true
 				delete(kv.terms, index)
-
-				kv.mu.Unlock()
-				break
-			}
-			if p.runed {
+				bFlag = true
+			}else if p.runed {
 				reply.Err= p.err
 				reply.WrongLeader = false
 				if p.err == Err("err leader") {
@@ -170,12 +173,14 @@ func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 				}
 				delete(kv.terms, index)
 				//DPrintf("peerId is %d, putappend reply is %v, kv is %v", kv.me,reply, kv.kv)
-
-				kv.mu.Unlock()
-				break
+				bFlag = true
 			}
 
 			kv.mu.Unlock()
+			DPrintf("kv:%d, putappend lease 2", kv.me)
+			if bFlag {
+				break
+			}
 		}
 	}else{
 		reply.WrongLeader = true
@@ -183,8 +188,10 @@ func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		//DPrintf("peerId is %d, reply addr is %x", kv.me, unsafe.Pointer(reply))
 	}
 	kv.mu.Lock()
+	DPrintf("kv:%d, putappend lock3", kv.me)
 	DPrintf("peerId is %d, putappend args is %v, reply is %v, terms is %v, kv is %v", kv.me,args,reply, kv.terms, kv.kv)
 	kv.mu.Unlock()
+	DPrintf("kv:%d, putappend lease 3", kv.me)
 }
 
 //
@@ -223,13 +230,13 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	// You may need initialization code here.
 
 	kv.applyCh = make(chan raft.ApplyMsg)
-	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
+	go kv.applyChannel()
 	kv.kv = make(map[string]string)
 	kv.terms = make(map[int]pack)
 	kv.opCount = make(map[int64]int64)
 	kv.persister = persister
-	kv.readPersist(persister.ReadSnapshot())
-	go kv.applyChannel()
+
+	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	// You may need initialization code here.
 
@@ -270,68 +277,59 @@ type Op struct {
 	OpNum int64
 }
 
-func (kv *RaftKV) persist() {
-	// Your code here (2C).
-	// Example:
-	w := new(bytes.Buffer)
-	e := gob.NewEncoder(w)
-	e.Encode(kv.kv)
-	e.Encode(kv.opCount)
-	data := w.Bytes()
-	kv.persister.SaveSnapshot(data)
-}
-
-//
-// restore previously persisted state.
-//
-func (kv *RaftKV) readPersist(data []byte) {
-	// Your code here (2C).
-	// Example:
-	r := bytes.NewBuffer(data)
-	d := gob.NewDecoder(r)
-	d.Decode(&kv.kv)
-	d.Decode(&kv.opCount)
-	if data == nil || len(data) < 1 { // bootstrap without any state?
-		return
-	}
-}
-
-
 func (kv *RaftKV) applyChannel (){
 	for {
 		apply, ok := <-kv.applyCh
 		//DPrintf("applyChannel apply is %v, ok is %v", apply, ok)
 		if ok {
-
-			kv.mu.Lock()
-			p, b := kv.terms[apply.Index]
-			op := p.op
-
-			command := apply.Command.(Op)
-			if b {
-				//run kv machine
-				if kv.opCount[command.ClientId] >= command.OpNum && op.OpType != GetOp{
-					kv.terms[apply.Index] = pack{op, true, OK, ""}
-					//DPrintf("xxxxxx, %d", kv.opCount[command.ClientId])
-				}else{
-					//DPrintf("yyyyyy")
-					error, value := command.DoTask(kv.kv)
-					if *op == command{
-						kv.terms[apply.Index] = pack{op, true,error, value}
-					}else {
-						kv.terms[apply.Index] = pack{op, true,Err("err leader"), ""}
-					}
-					kv.opCount[command.ClientId] = command.OpNum
-				}
+			if apply.UseSnapshot {
+				kv.mu.Lock()
+				DPrintf("kv:%d, applyChannel lock1", kv.me)
+				r := bytes.NewBuffer(apply.Snapshot)
+				d := gob.NewDecoder(r)
+				d.Decode(&kv.kv)
+				d.Decode(&kv.opCount)
+				kv.mu.Unlock()
+				DPrintf("kv:%d, applyChannel lease1", kv.me)
 			}else{
-				if kv.opCount[command.ClientId] < command.OpNum {
-					command.DoTask(kv.kv)
-					kv.opCount[command.ClientId] = command.OpNum
-				}
+				kv.mu.Lock()
+				DPrintf("kv:%d, applyChannel lock2", kv.me)
+				p, b := kv.terms[apply.Index]
+				op := p.op
 
+				command := apply.Command.(Op)
+				if b {
+					//run kv machine
+					if kv.opCount[command.ClientId] >= command.OpNum && op.OpType != GetOp{
+						kv.terms[apply.Index] = pack{op, true, OK, ""}
+						//DPrintf("xxxxxx, %d", kv.opCount[command.ClientId])
+					}else{
+						//DPrintf("yyyyyy")
+						error, value := command.DoTask(kv.kv)
+						if *op == command{
+							kv.terms[apply.Index] = pack{op, true,error, value}
+						}else {
+							kv.terms[apply.Index] = pack{op, true,Err("err leader"), ""}
+						}
+						kv.opCount[command.ClientId] = command.OpNum
+					}
+				}else{
+					if kv.opCount[command.ClientId] < command.OpNum {
+						command.DoTask(kv.kv)
+						kv.opCount[command.ClientId] = command.OpNum
+					}
+				}
+				if kv.maxraftstate != -1 && kv.persister.RaftStateSize() > kv.maxraftstate && kv.rf != nil{
+					w := new(bytes.Buffer)
+					e := gob.NewEncoder(w)
+					e.Encode(kv.kv)
+					e.Encode(kv.opCount)
+					data := w.Bytes()
+					go kv.rf.StartSnapshot(data, apply.Index)
+				}
+				kv.mu.Unlock()
+				DPrintf("kv:%d, applyChannel lease2", kv.me)
 			}
-			kv.persist()
-			kv.mu.Unlock()
 		}else {
 			break
 		}
