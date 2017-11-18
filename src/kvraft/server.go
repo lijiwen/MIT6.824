@@ -64,6 +64,7 @@ func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 	op.Args[0] =args.Key
 	op.ClientId = args.ClientId
 	op.OpNum= args.OpNum
+	DPrintf("kv id is %d", kv.me)
 
 	kv.mu.Lock()
 	DPrintf("kv:%d, get lock 1", kv.me)
@@ -115,7 +116,6 @@ func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 			}
 		}
 	}else{
-		DPrintf("4")
 		reply.WrongLeader = true
 		reply.Err = OK
 	}
@@ -138,6 +138,7 @@ func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	op.Args[1] = args.Value
 	op.ClientId = args.ClientId
 	op.OpNum= args.OpNum
+	DPrintf("kv id is %d", kv.me)
 	kv.mu.Lock()
 	DPrintf("kv:%d, putappend lock 1", kv.me)
 	index, _, isLeaader := kv.rf.Start(op)

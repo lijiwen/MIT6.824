@@ -30,9 +30,9 @@ import (
 // import "encoding/gob"
 
 const(
-	FollowerState  = iota
-	CandidateState
-	LeaderState
+	FollowerState  = 1
+	CandidateState = 2
+	LeaderState = 3
 )
 
 //
@@ -85,7 +85,7 @@ type Raft struct {
 	heartBeatTimer *time.Timer
 	commitTimer *time.Ticker
 	applyCh chan ApplyMsg
-
+	closed bool
 }
 
 // return currentTerm and whether this server
@@ -201,7 +201,6 @@ func min(a, b int) int{
 
 func (rf *Raft) checkCanCommited(){
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
 
 	n := rf.commitIndex
 	serverNum := len(rf.peers)
@@ -227,9 +226,10 @@ func (rf *Raft) checkCanCommited(){
 			break
 		}else {
 			//DPrintf("i:%d, beginCommitIndex%d", i, beginCommitIndex)
-			DPrintf("PeerId %d leader do not commit to %d, currentTerm is %d, log term is %d\n", rf.me, rf.commitIndex, rf.currentTerm, rf.log[i - baseIndex].Term)
+			DPrintf("PeerId %d leader do not commit to %d, currentTerm is %d, log term is %d\n", rf.me, i, rf.currentTerm, rf.log[i - baseIndex].Term)
 		}
 	}
+	rf.mu.Unlock()
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -297,7 +297,6 @@ type RequestVoteReply struct {
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
 	if rf.state == FollowerState {
 		rf.resetHeartBeatTimer()
 	}
@@ -306,6 +305,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	if rf.currentTerm > args.Term {
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = false
+		rf.mu.Unlock()
 		return
 	}
 
@@ -333,6 +333,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	//DPrintf("PeerId %d vote for %d\n", rf.me, rf.votedFor)
 	//DPrintf("PeerId %d reply PeerId %d: Term is %d, vote is %v\n",
 	//			rf.me, args.CandidateId, rf.currentTerm, reply.VoteGranted)
+	rf.mu.Unlock()
 }
 
 func isNewest(termA, indexA, termB, indexB int) bool {
@@ -400,10 +401,9 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := true
 
 	// Your code here (2B).
-	//DPrintf("Start !!!!!!!!!")
+	DPrintf("PeerId %d, Start !!!!!!!!!", rf.me)
 
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
 	if rf.state == LeaderState {
 		isLeader = true
 		index = rf.getLastIndex() + 1
@@ -416,16 +416,17 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	}else {
 		isLeader = false
 	}
-	DPrintf("start")
+	DPrintf("PeerId %d start", rf.me)
+	rf.mu.Unlock()
 
 	return index, term, isLeader
 }
 
 func (rf *Raft) StartSnapshot(data []byte, index int){
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
 
 	if index < rf.log[0].Index || index > rf.getLastIndex() {
+		rf.mu.Unlock()
 		return
 	}
 	baseIndex := rf.log[0].Index
@@ -439,6 +440,7 @@ func (rf *Raft) StartSnapshot(data []byte, index int){
 	rf.log = newLog
 	rf.persist()
 	rf.persister.SaveSnapshot(data)
+	rf.mu.Unlock()
 }
 
 type InstallSnapshotArgs struct{
@@ -455,13 +457,13 @@ type InstallSnapshotReply struct {
 
 func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
 	if rf.state == FollowerState {
 		rf.resetHeartBeatTimer()
 	}
 
 	if args.Term < rf.currentTerm {
 		reply.Term = rf.currentTerm
+		rf.mu.Unlock()
 		return
 	}
 
@@ -483,8 +485,9 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 
 	rf.persist()
 	rf.persister.SaveSnapshot(args.Data)
-	rf.applyCh <- msg
 	DPrintf("InstallSnapshot")
+	rf.mu.Unlock()
+	rf.applyCh <- msg
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -648,10 +651,11 @@ func (rf *Raft) Kill() {
 	rf.mu.Lock()
 	DPrintf("PeerId %d crash\n", rf.me)
 
-	close(rf.applyCh)
-	rf.applyCh = nil
+	//close(rf.applyCh)
+	//rf.applyCh = nil
 	close(rf.stateCh)
 	rf.stateCh = nil
+	rf.closed = true
 	rf.mu.Unlock()
 }
 
@@ -690,12 +694,12 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.nextIndex = make([]int, len(peers))
 	rf.matchIndex = make([]int, len(peers))
 
-	go rf.createCommitTimer()
-
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 	rf.readSnapshot(persister.ReadSnapshot())
 	rf.displayLog()
+
+	go rf.createCommitTimer()
 
 	go rf.stateMachine()
 
@@ -703,6 +707,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 }
 
 func (rf *Raft) displayLog() {
+	DPrintf("PeerId %d display begin", rf.me)
+	rf.mu.Lock()
 	baseIndex := rf.log[0].Index
 	for i := baseIndex + 1; i <= rf.commitIndex; i++ {
 		if i - baseIndex < len(rf.log){
@@ -712,6 +718,8 @@ func (rf *Raft) displayLog() {
 			rf.applyCh <- msg
 		}
 	}
+	rf.mu.Unlock()
+	DPrintf("PeerId %d display end", rf.me)
 }
 
 func (rf *Raft) stopCommittimer() {
@@ -722,6 +730,9 @@ func (rf *Raft) createCommitTimer() {
 	rf.commitTimer = time.NewTicker(200 * time.Millisecond)
 	for _ = range rf.commitTimer.C {
 		rf.mu.Lock()
+		if rf.closed {
+			break
+		}
 		cIndex := rf.commitIndex
 		baseIndex := rf.log[0].Index
 		for cIndex > rf.lastApplied {
@@ -730,12 +741,16 @@ func (rf *Raft) createCommitTimer() {
 			//apply
 			rf.persist()
 
-			func(index int){
-				if index > baseIndex {
-					rf.applyCh <- ApplyMsg{index, rf.log[index - baseIndex].L, false, nil}
-				}
-			}(rf.lastApplied)
-			//DPrintf("PeerId %d apply to %d, log is %v\n", rf.me, rf.lastApplied, rf.log[rf.lastApplied - baseIndex])
+			index := rf.lastApplied
+			if index > baseIndex && rf.closed != true{
+				command := rf.log[index - baseIndex].L
+				rf.mu.Unlock()
+				rf.applyCh <- ApplyMsg{index, command, false, nil}
+
+				DPrintf("PeerId %d apply to %d, log is %v\n", rf.me, rf.lastApplied, rf.log[rf.lastApplied - baseIndex])
+				rf.mu.Lock()
+			}
+
 		}
 		rf.mu.Unlock()
 	}
@@ -817,7 +832,8 @@ func (rf *Raft) stateMachine(){
 			go rf.atLeader()
 			rf.state = <- rf.stateCh
 		default:
-			//DPrintf("raft.go stateMachine default error\n")
+			DPrintf("PeerId %d stateMachine default error\n", rf.me)
+			return
 		}
 	}
 }
