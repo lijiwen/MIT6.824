@@ -221,12 +221,12 @@ func (rf *Raft) checkCanCommited(){
 	for i := canCommitIndex; i >= beginCommitIndex; i-- {
 		if rf.currentTerm == rf.log[i - baseIndex].Term {
 			rf.commitIndex = i
-			DPrintf("PeerId %d leader commit to %d", rf.me, rf.commitIndex)
+			//DPrintf("PeerId %d leader commit to %d", rf.me, rf.commitIndex)
 			rf.persist()
 			break
 		}else {
 			//DPrintf("i:%d, beginCommitIndex%d", i, beginCommitIndex)
-			DPrintf("PeerId %d leader do not commit to %d, currentTerm is %d, log term is %d\n", rf.me, i, rf.currentTerm, rf.log[i - baseIndex].Term)
+			//DPrintf("PeerId %d leader do not commit to %d, currentTerm is %d, log term is %d\n", rf.me, i, rf.currentTerm, rf.log[i - baseIndex].Term)
 		}
 	}
 	rf.mu.Unlock()
@@ -401,7 +401,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := true
 
 	// Your code here (2B).
-	DPrintf("PeerId %d, Start !!!!!!!!!", rf.me)
+	//DPrintf("PeerId %d, Start !!!!!!!!!", rf.me)
 
 	rf.mu.Lock()
 	if rf.state == LeaderState {
@@ -412,11 +412,11 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		rf.log = append(rf.log, Log{index,term, command})
 		rf.persist()
 		go rf.sendAppendEntriesToAllServer()
-		DPrintf("Start leader is %d, index is %d, term is %d, command is %v\n",rf.me, index, term, command)
+		DPrintf("Start leader is %d, index is %d, term is %d, command is %v, log is %v\n",rf.me, index, term, command, rf.log)
 	}else {
 		isLeader = false
 	}
-	DPrintf("PeerId %d start", rf.me)
+	//DPrintf("PeerId %d start", rf.me)
 	rf.mu.Unlock()
 
 	return index, term, isLeader
@@ -485,7 +485,7 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 
 	rf.persist()
 	rf.persister.SaveSnapshot(args.Data)
-	DPrintf("InstallSnapshot")
+	//DPrintf("InstallSnapshot")
 	rf.mu.Unlock()
 	rf.applyCh <- msg
 }
@@ -551,10 +551,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	beginIndex := args.PrevLogIndex + 1
-	//DPrintf("PeerId %d: term is %d,  entries log is %v\n", rf.me,args.Term, args.Entries)
+	DPrintf("PeerId %d: term is %d,  entries log is %v\n", rf.me,args.Term, args.Entries)
 	for i := 0; i < len(args.Entries); i++ {
 		if i + beginIndex <= rf.getLastIndex() {
-			if rf.log[i + beginIndex - baseIndex] != args.Entries[i]{
+			if rf.log[i + beginIndex - baseIndex].Index != args.Entries[i].Index &&
+				rf.log[i + beginIndex - baseIndex].Term != args.Entries[i].Term{
 				rf.log[i + beginIndex - baseIndex] = args.Entries[i]
 				rf.log = rf.log[ : i + beginIndex + 1 - baseIndex: i + beginIndex + 1 - baseIndex]
 			}
@@ -567,7 +568,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	if args.LeaderCommit > rf.commitIndex {
 		rf.commitIndex = min(args.LeaderCommit, rf.getLastIndex())
-		DPrintf("PeerId %d commit to %d", rf.me, rf.commitIndex)
+		DPrintf("PeerId %d commit to %d, log is %v", rf.me, rf.commitIndex, rf.log)
 	}
 	reply.Term = rf.currentTerm
 	reply.Success = true
@@ -649,7 +650,7 @@ func (rf *Raft) sendAppendEntriesToAllServer () {
 func (rf *Raft) Kill() {
 	// Your code here, if desired.
 	rf.mu.Lock()
-	DPrintf("PeerId %d crash\n", rf.me)
+	//DPrintf("PeerId %d crash\n", rf.me)
 
 	//close(rf.applyCh)
 	//rf.applyCh = nil
@@ -707,19 +708,19 @@ func Make(peers []*labrpc.ClientEnd, me int,
 }
 
 func (rf *Raft) displayLog() {
-	DPrintf("PeerId %d display begin", rf.me)
+	//DPrintf("PeerId %d display begin", rf.me)
 	rf.mu.Lock()
 	baseIndex := rf.log[0].Index
 	for i := baseIndex + 1; i <= rf.commitIndex; i++ {
 		if i - baseIndex < len(rf.log){
-			DPrintf("i:%d, baseIndex:%d", i, baseIndex)
+			//DPrintf("i:%d, baseIndex:%d", i, baseIndex)
 			log := rf.log[i - baseIndex]
 			msg := ApplyMsg{log.Index, log.L, false, nil}
 			rf.applyCh <- msg
 		}
 	}
 	rf.mu.Unlock()
-	DPrintf("PeerId %d display end", rf.me)
+	//DPrintf("PeerId %d display end", rf.me)
 }
 
 func (rf *Raft) stopCommittimer() {
@@ -801,7 +802,7 @@ func (rf *Raft) stopHeartBeatTimer() {
 
 func (rf *Raft) stateMachine(){
 	for {
-		DPrintf("peerId %d stateMachine state is %d, Term is %d\n", rf.me, rf.state, rf.currentTerm)
+		//DPrintf("peerId %d stateMachine state is %d, Term is %d\n", rf.me, rf.state, rf.currentTerm)
 
 		switch rf.state {
 		case FollowerState:
@@ -832,7 +833,7 @@ func (rf *Raft) stateMachine(){
 			go rf.atLeader()
 			rf.state = <- rf.stateCh
 		default:
-			DPrintf("PeerId %d stateMachine default error\n", rf.me)
+			//DPrintf("PeerId %d stateMachine default error\n", rf.me)
 			return
 		}
 	}
@@ -851,6 +852,7 @@ func (rf *Raft) initIPeerEntries(appendEntriesArgs *AppendEntriesArgs, i int) {
 	for j := rf.nextIndex[i]; j < logTag; j++ {
 		appendEntriesArgs.Entries = append(appendEntriesArgs.Entries, rf.log[j - baseIndex])
 	}
+	DPrintf("PeerId %d, to %d, init entries %v", rf.me, i, appendEntriesArgs.Entries)
 }
 
 func (rf *Raft) atLeader() {
