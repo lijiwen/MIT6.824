@@ -1,5 +1,7 @@
 package shardkv
 
+import "shardmaster"
+
 //
 // Sharded key/value server.
 // Lots of replica groups, each running op-at-a-time paxos.
@@ -23,9 +25,8 @@ type PutAppendArgs struct {
 	Key   string
 	Value string
 	Op    string // "Put" or "Append"
-	// You'll have to add definitions here.
-	// Field names must start with capital letters,
-	// otherwise RPC will break.
+	ClientId int64
+	OpNum int64
 }
 
 type PutAppendReply struct {
@@ -35,6 +36,8 @@ type PutAppendReply struct {
 
 type GetArgs struct {
 	Key string
+	ClientId int64
+	OpNum int64
 	// You'll have to add definitions here.
 }
 
@@ -42,4 +45,18 @@ type GetReply struct {
 	WrongLeader bool
 	Err         Err
 	Value       string
+}
+
+type PullDataArgs struct {
+	Shards []int
+	Config shardmaster.Config
+	ClientId int64
+	OpNum int64
+	// You'll have to add definitions here.
+}
+
+type PullDataReply struct {
+	WrongLeader bool
+	Err         Err
+	Kvs map[int]map[string]string
 }

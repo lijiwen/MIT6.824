@@ -12,7 +12,10 @@ import "labrpc"
 import "crypto/rand"
 import "math/big"
 import "shardmaster"
-import "time"
+import (
+	"time"
+	"sync/atomic"
+)
 
 //
 // which shard is a key in?
@@ -39,7 +42,7 @@ type Clerk struct {
 	sm       *shardmaster.Clerk
 	config   shardmaster.Config
 	make_end func(string) *labrpc.ClientEnd
-	// You will have to modify this struct.
+	currentOpNum int64
 }
 
 //
@@ -55,6 +58,7 @@ func MakeClerk(masters []*labrpc.ClientEnd, make_end func(string) *labrpc.Client
 	ck := new(Clerk)
 	ck.sm = shardmaster.MakeClerk(masters)
 	ck.make_end = make_end
+	ck.currentOpNum = 0
 	// You'll have to add code here.
 	return ck
 }
@@ -66,8 +70,11 @@ func MakeClerk(masters []*labrpc.ClientEnd, make_end func(string) *labrpc.Client
 // You will have to modify this function.
 //
 func (ck *Clerk) Get(key string) string {
+	DPrintf("Get key %v", key)
 	args := GetArgs{}
 	args.Key = key
+	args.ClientId = ck.sm.GetClientId()
+	args.OpNum = atomic.AddInt64(&ck.currentOpNum, 1)
 
 	for {
 		shard := key2shard(key)
@@ -82,6 +89,7 @@ func (ck *Clerk) Get(key string) string {
 					return reply.Value
 				}
 				if ok && (reply.Err == ErrWrongGroup) {
+					args.OpNum = atomic.AddInt64(&ck.currentOpNum, 1)
 					break
 				}
 			}
@@ -104,6 +112,8 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	args.Value = value
 	args.Op = op
 
+	args.ClientId = ck.sm.GetClientId()
+	args.OpNum = atomic.AddInt64(&ck.currentOpNum, 1)
 
 	for {
 		shard := key2shard(key)
@@ -117,6 +127,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 					return
 				}
 				if ok && reply.Err == ErrWrongGroup {
+					args.OpNum = atomic.AddInt64(&ck.currentOpNum, 1)
 					break
 				}
 			}
@@ -128,8 +139,10 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 }
 
 func (ck *Clerk) Put(key string, value string) {
+	DPrintf("Put key %v, value %v", key, value)
 	ck.PutAppend(key, value, "Put")
 }
 func (ck *Clerk) Append(key string, value string) {
+	DPrintf("Append key %v, value %v", key, value)
 	ck.PutAppend(key, value, "Append")
 }

@@ -554,7 +554,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	DPrintf("PeerId %d: term is %d,  entries log is %v\n", rf.me,args.Term, args.Entries)
 	for i := 0; i < len(args.Entries); i++ {
 		if i + beginIndex <= rf.getLastIndex() {
-			if rf.log[i + beginIndex - baseIndex].Index != args.Entries[i].Index &&
+			if rf.log[i + beginIndex - baseIndex].Index != args.Entries[i].Index ||
 				rf.log[i + beginIndex - baseIndex].Term != args.Entries[i].Term{
 				rf.log[i + beginIndex - baseIndex] = args.Entries[i]
 				rf.log = rf.log[ : i + beginIndex + 1 - baseIndex: i + beginIndex + 1 - baseIndex]
@@ -735,8 +735,8 @@ func (rf *Raft) createCommitTimer() {
 			break
 		}
 		cIndex := rf.commitIndex
-		baseIndex := rf.log[0].Index
 		for cIndex > rf.lastApplied {
+			baseIndex := rf.log[0].Index
 			rf.lastApplied++
 			//DPrintf("PeerId %d log is %v", rf.me, rf.log)
 			//apply
@@ -744,11 +744,10 @@ func (rf *Raft) createCommitTimer() {
 
 			index := rf.lastApplied
 			if index > baseIndex && rf.closed != true{
+				DPrintf("index :%d, baseIndex :%d, log :%v", index, baseIndex, rf.log)
 				command := rf.log[index - baseIndex].L
 				rf.mu.Unlock()
 				rf.applyCh <- ApplyMsg{index, command, false, nil}
-
-				DPrintf("PeerId %d apply to %d, log is %v\n", rf.me, rf.lastApplied, rf.log[rf.lastApplied - baseIndex])
 				rf.mu.Lock()
 			}
 
