@@ -205,7 +205,7 @@ func TestSnapshot(t *testing.T) {
 func TestMissChange(t *testing.T) {
 	fmt.Printf("Test: servers miss configuration changes...\n")
 
-	cfg := make_config(t, 3, false, 1000)
+	cfg := make_config(t, 3, false, -1)
 	defer cfg.cleanup()
 
 	ck := cfg.makeClient()
@@ -291,7 +291,7 @@ func TestMissChange(t *testing.T) {
 func TestConcurrent1(t *testing.T) {
 	fmt.Printf("Test: concurrent puts and configuration changes...\n")
 
-	cfg := make_config(t, 3, false, 100)
+	cfg := make_config(t, 3, false, -1)
 	defer cfg.cleanup()
 
 	ck := cfg.makeClient()
@@ -443,7 +443,7 @@ func TestConcurrent2(t *testing.T) {
 func TestUnreliable1(t *testing.T) {
 	fmt.Printf("Test: unreliable 1...\n")
 
-	cfg := make_config(t, 3, true, 100)
+	cfg := make_config(t, 3, true, -1)
 	defer cfg.cleanup()
 
 	ck := cfg.makeClient()
@@ -485,7 +485,7 @@ func TestUnreliable1(t *testing.T) {
 func TestUnreliable2(t *testing.T) {
 	fmt.Printf("Test: unreliable 2...\n")
 
-	cfg := make_config(t, 3, true, 100)
+	cfg := make_config(t, 3, true, -1)
 	defer cfg.cleanup()
 
 	ck := cfg.makeClient()

@@ -119,6 +119,7 @@ func (op *Op) DoTask(kv *ShardKV) (Err, interface{}){
 				}
 			}
 		}
+
 		err = OK
 		ret = kvs
 	case ReConfigOp:
@@ -144,9 +145,9 @@ func (op *Op) DoTask(kv *ShardKV) (Err, interface{}){
 			}
 			kv.config = &config
 		}
-
-		DPrintf("gid:%d, new Config is %v, new kv",kv.gid, kv.config, kv.kvs)
+		DPrintf("gid:%d, new Config is %v, new kv %v",kv.gid, kv.config, kv.kvs)
 		err = OK
+		ret = nil
 	default:
 		DPrintf("shardkv Dotask default error")
 	}
@@ -156,6 +157,7 @@ func (op *Op) DoTask(kv *ShardKV) (Err, interface{}){
 
 type ShardKV struct {
 	mu           sync.Mutex
+	reConfigMu     sync.Mutex
 	me           int
 	rf           *raft.Raft
 	applyCh      chan raft.ApplyMsg
@@ -199,6 +201,7 @@ func (kv *ShardKV) DoCall(op *Op) doCallReply {
 	index, _, isLeaader := kv.rf.Start(*op)
 
 	if isLeaader {
+		DPrintf("docallreply is leader, peerId:%d , op is %v", kv.me, op.OpType)
 		kv.terms[index] = pack{op, false, Err(""), ""}
 	}
 	kv.mu.Unlock()
@@ -218,6 +221,7 @@ func (kv *ShardKV) DoCall(op *Op) doCallReply {
 
 			//timeout
 			if i == 10 {
+				DPrintf("docallreply is timeout, peerId:%d, op is %v",kv.me, op.OpType)
 				reply.err = OK
 				reply.isLeader = false
 				delete(kv.terms, index)
@@ -259,6 +263,9 @@ const (
 )
 
 func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
+	kv.reConfigMu.Lock()
+	//DPrintf("Get reconfig mu lock")
+
 	op := Op{}
 
 	op.OpType = GetOp
@@ -280,10 +287,15 @@ func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 		reply.WrongLeader = true
 		reply.Err = OK
 	}
+	kv.reConfigMu.Unlock()
+	//DPrintf("Get reconfig mu lease")
 	return
 }
 
 func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
+	kv.reConfigMu.Lock()
+	//DPrintf("putappend reconfig mu lock")
+
 	op := Op{}
 	if args.Op == "Put" {
 		op.OpType = PutOp
@@ -306,12 +318,21 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		reply.WrongLeader = true
 		reply.Err = OK
 	}
-	DPrintf("Gid:%d,  putappend : kvs:%v, reply:%v", kv.gid,kv.kvs, reply)
+	if kv.config != nil {
+		DPrintf("Gid:%d, config num:%d, putappend : kvs:%v, reply:%v", kv.gid,kv.config.Num ,kv.kvs, reply)
+	}
+
+	kv.reConfigMu.Unlock()
+	//DPrintf("putappend reconfig mu lease")
 	return
 }
 
 
 func (kv *ShardKV) PullData(args *PullDataArgs, reply *PullDataReply) {
+	DPrintf("Gid %d, pulldata", kv.gid)
+	kv.reConfigMu.Lock()
+	//DPrintf("pulldata reconfig mu lock")
+
 	op := Op{}
 
 	op.OpType = PullDataOp
@@ -346,7 +367,9 @@ func (kv *ShardKV) PullData(args *PullDataArgs, reply *PullDataReply) {
 		reply.WrongLeader = true
 		reply.Err = OK
 	}
-	//DPrintf("Gid:%d,  pulldata : kvs:%v, reply:%v", kv.gid,kv.kvs, reply)
+	DPrintf("Gid:%d, peerId:%d,  pulldata : kvs:%v, reply:%v", kv.gid, kv.me, kv.kvs, reply)
+	kv.reConfigMu.Unlock()
+	//DPrintf("pulldata reconfig mu lease")
 	return
 }
 
@@ -414,7 +437,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	kv.persister = persister
 	kv.mck = shardmaster.MakeClerk(kv.masters)
 	kv.config = nil
-	kv.ticker = time.NewTicker(200 * time.Millisecond)
+	kv.ticker = time.NewTicker(250 * time.Millisecond)
 	kv.currentOpNum = 0
 
 	kv.applyCh = make(chan raft.ApplyMsg)
@@ -431,43 +454,52 @@ func (kv *ShardKV) getConfigTiker(ticker *time.Ticker) {
 		if !ok {
 			break
 		}
+		kv.reConfigMu.Lock()
+		//DPrintf("getConfigTiker reconfig mu lock")
 		kv.ReConfig()
+		kv.reConfigMu.Unlock()
+		//DPrintf("getConfigTiker reconfig mu lease")
 	}
 }
 
 func (kv *ShardKV) ReConfig(){
 	newConfig := kv.mck.Query(-1)
 	kv.mu.Lock()
-	DPrintf("peer %d reconfig lock1", kv.me)
-	if kv.config == nil || newConfig.Num > kv.config.Num{
-		increaseShard := getIncreaseShards(kv.gid, &newConfig, kv.config)
+	var num int
+	if kv.config == nil {
+		num = 0
+	}else {
+		num = kv.config.Num + 1
+	}
+	kv.mu.Unlock()
+	for num <= newConfig.Num{
+		cConfig := kv.mck.Query(num)
+		increaseShard := getIncreaseShards(kv.gid, &cConfig, kv.config)
 		var newKvs [shardmaster.NShards]map[string]string
 		for i := 0; i < shardmaster.NShards; i++ {
 			newKvs[i] = make(map[string]string)
 		}
 		if len(increaseShard) != 0{
-			DPrintf("gid:%d, Config change, old config:%v, new config %v",kv.gid, kv.config, newConfig)
-			kv.pulldataFromServers(increaseShard, &newConfig, &newKvs)
+			DPrintf("gid:%d, Config change, old config:%v, new config %v",kv.gid, kv.config, cConfig)
+			kv.pulldataFromServers(increaseShard, &cConfig, &newKvs)
 		}
-		kv.callReconfig(&newKvs, &newConfig)
+		kv.callReconfig(&newKvs, &cConfig)
+		num ++
 	}
-	kv.mu.Unlock()
-	DPrintf("peer %d reconfig lease", kv.me)
+
 }
 
 func (kv *ShardKV) pulldataFromServers(increaseShard []int, config *shardmaster.Config, newKvs *[shardmaster.NShards]map[string]string){
+	kv.mu.Lock()
 	var group map[int][]string
 	if kv.config == nil {
 		group = config.Groups
 	}else {
 		group = kv.config.Groups
 	}
+	kv.mu.Unlock()
 
-	var args PullDataArgs
-	args.Shards = increaseShard
-	args.Config = *config
-	args.ClientId = kv.mck.GetClientId()
-	args.OpNum = atomic.AddInt64(&kv.currentOpNum, 1)
+
 	var wg sync.WaitGroup
 
 	var mu sync.Mutex
@@ -476,10 +508,36 @@ func (kv *ShardKV) pulldataFromServers(increaseShard []int, config *shardmaster.
 		if gid == kv.gid {
 			continue
 		}
-		wg.Add(1)
-		go kv.pulldataFromServer(&args, servers, &wg, newKvs, &mu)
+
+		var args PullDataArgs
+		kv.mu.Lock()
+		args.Shards = getIncreaseShardsByGid(gid, increaseShard, kv.config)
+		//args.Shards = increaseShard
+		kv.mu.Unlock()
+		if len(args.Shards) == 0 {
+			continue
+		}
+		args.Config = *config
+		args.ClientId = kv.mck.GetClientId()
+		args.OpNum = atomic.AddInt64(&kv.currentOpNum, 1)
+		kv.pulldataFromServer(&args, servers, &wg, newKvs, &mu)
 	}
-	wg.Wait()
+}
+
+func getIncreaseShardsByGid(gid int, increaseShards []int, config *shardmaster.Config) []int{
+	if config == nil{
+		return increaseShards
+	}
+	ret := []int{}
+	for _, shard := range increaseShards {
+		for s, g := range config.Shards {
+			if g == gid && s == shard{
+				ret = append(ret, s)
+			}
+		}
+	}
+	DPrintf("getIncreaseShardsByGid, gid %d, increaseShards %v, oldShards:%v, ret:%v", gid, increaseShards, config.Shards, ret)
+	return ret
 }
 
 func (kv *ShardKV) callReconfig(newKvs *[shardmaster.NShards]map[string]string, config *shardmaster.Config){
@@ -502,43 +560,7 @@ func (kv *ShardKV) callReconfig(newKvs *[shardmaster.NShards]map[string]string, 
 	op.ClientId = kv.mck.GetClientId()
 	op.OpNum = atomic.AddInt64(&kv.currentOpNum, 1)
 
-	index, _, isLeaader := kv.rf.Start(op)
-	DPrintf("do call reconfig, kv:%v, config num %d", newKvs, config.Num)
-	if isLeaader {
-		DPrintf("do call reconfig leader")
-		kv.terms[index] = pack{&op, false, Err(""), ""}
-	}
-
-
-	if isLeaader {
-		kv.mu.Unlock()
-		t := time.NewTicker(timeout * time.Millisecond)
-		i := 0
-		for {
-			<- t.C
-			i++
-			bFlag := false
-			//DPrintf("tiemrtiemrtiemr")
-			kv.mu.Lock()
-			p := kv.terms[index]
-
-			//timeout
-			if i == 10 {
-				delete(kv.terms, index)
-				bFlag = true
-			}else if p.runed {
-				delete(kv.terms, index)
-				bFlag = true
-			}
-
-			kv.mu.Unlock()
-			if bFlag {
-				break
-			}
-		}
-		kv.mu.Lock()
-	}
-	DPrintf("do call reconfig end")
+	kv.DoCall(&op)
 }
 
 func (kv *ShardKV) pulldataFromServer(args *PullDataArgs,
@@ -550,6 +572,7 @@ func (kv *ShardKV) pulldataFromServer(args *PullDataArgs,
 		srv := kv.make_end(servers[si])
 		var reply PullDataReply
 		ok := srv.Call("ShardKV.PullData", args, &reply)
+
 		if ok && reply.WrongLeader == false && (reply.Err == OK || reply.Err == ErrNoKey) {
 			DPrintf("Gid:%d, before Pulldata From group : kvs:%v, reply kv %v", kv.gid,kv.kvs, reply.Kvs)
 			if len(reply.Kvs) != 0 {
@@ -564,7 +587,7 @@ func (kv *ShardKV) pulldataFromServer(args *PullDataArgs,
 			break
 		}
 	}
-	wg.Done()
+	//wg.Done()
 }
 
 func getIncreaseShards(gid int, newConfig *shardmaster.Config, oldConfig *shardmaster.Config) []int {
@@ -600,12 +623,13 @@ func getIncreaseShards(gid int, newConfig *shardmaster.Config, oldConfig *shardm
 		}
 	}
 	return ret
+	return newShards
 }
 
 func (kv *ShardKV) applyChannel (){
 	for {
 		apply, ok := <-kv.applyCh
-		//DPrintf("applyChannel apply is %v, ok is %v", apply, ok)
+		DPrintf("applyChannel peerId %d, ok is %v", kv.me, ok)
 		if ok {
 			if apply.UseSnapshot {
 				kv.mu.Lock()
